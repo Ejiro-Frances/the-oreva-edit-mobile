@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppText } from '@/components/AppText';
 import { Button } from '@/components/Button';
 import { ErrorState } from '@/components/ErrorState';
+import { Notice } from '@/components/Notice';
 import { Price } from '@/components/Price';
 import { colors } from '@/components/theme';
 import { useBag } from '@/features/bag/provider';
@@ -47,7 +48,7 @@ export default function ProductScreen() {
 function ProductDetail({ product }: { product: Product }) {
   const [selection, setSelection] = useState(() => initialSelection(product));
   const variant = selectedVariant(product, selection.options);
-  const { add } = useBag();
+  const { add, notice, clearNotice } = useBag();
   const [adding, setAdding] = useState(false);
   const [added, setAdded] = useState(false);
 
@@ -55,6 +56,7 @@ function ProductDetail({ product }: { product: Product }) {
     if (!variant) return;
     setAdding(true);
     setAdded(false);
+    clearNotice();
     try {
       setAdded(await add(variant.id, 1, variant.stock));
     } finally {
@@ -86,7 +88,10 @@ function ProductDetail({ product }: { product: Product }) {
         <VariantPicker
           product={product}
           selected={selection.options}
-          onChoose={(k, val) => setSelection((s) => selectOption(product, s, k, val))}
+          onChoose={(k, val) => {
+            setAdded(false);
+            setSelection((s) => selectOption(product, s, k, val));
+          }}
         />
         <AppText variant="muted">
           {!variant
@@ -115,6 +120,7 @@ function ProductDetail({ product }: { product: Product }) {
             </Pressable>
           </View>
         ) : null}
+        {notice ? <Notice message={notice} onClose={clearNotice} /> : null}
         {product.description ? <AppText>{product.description}</AppText> : null}
         {product.details.map((line) => (
           <AppText key={line}>{`• ${line}`}</AppText>

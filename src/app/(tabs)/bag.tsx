@@ -2,9 +2,10 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { X } from 'lucide-react-native';
 import { AppText } from '@/components/AppText';
 import { Button } from '@/components/Button';
+import { ErrorState } from '@/components/ErrorState';
+import { Notice } from '@/components/Notice';
 import { QuantityStepper } from '@/components/QuantityStepper';
 import { colors } from '@/components/theme';
 import { useBag } from '@/features/bag/provider';
@@ -15,7 +16,7 @@ import type { BagLine } from '@/lib/types';
 const unitPrice = (line: BagLine) => line.variant.price ?? line.product.price;
 
 export default function BagScreen() {
-  const { lines, ready, signedIn, notice, clearNotice, setQuantity, remove } = useBag();
+  const { lines, ready, signedIn, notice, clearNotice, error, retry, setQuantity, remove } = useBag();
   const subtotal = lines.reduce((sum, line) => sum + unitPrice(line) * line.quantity, 0);
 
   return (
@@ -23,13 +24,12 @@ export default function BagScreen() {
       <AppText variant="display">Your bag</AppText>
       {notice ? (
         <View style={styles.notice}>
-          <AppText style={{ flex: 1 }}>{notice}</AppText>
-          <Pressable accessibilityRole="button" accessibilityLabel="Dismiss" onPress={clearNotice} style={styles.close}>
-            <X size={16} color={colors.foreground} />
-          </Pressable>
+          <Notice message={notice} onClose={clearNotice} />
         </View>
       ) : null}
-      {!ready ? (
+      {error && lines.length === 0 ? (
+        <ErrorState message={error.message} onRetry={retry} />
+      ) : !ready ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.primary} />
         </View>
@@ -94,17 +94,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, paddingHorizontal: 16, paddingTop: 16 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   empty: { gap: 16, paddingTop: 24 },
-  notice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.elevated,
-    paddingLeft: 12,
-    marginTop: 12,
-  },
-  close: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  notice: { marginTop: 12 },
   row: { flexDirection: 'row', gap: 12 },
   image: { width: 72, height: 96, backgroundColor: colors.surface },
   info: { flex: 1, gap: 6 },
