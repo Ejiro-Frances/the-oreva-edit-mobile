@@ -12,6 +12,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { colors } from '@/components/theme';
 import { AuthProvider } from '@/features/auth/provider';
 import { BagProvider } from '@/features/bag/provider';
+import { NetworkBanner } from '@/components/NetworkBanner';
 import { queryClient } from '@/lib/query';
 
 SplashScreen.preventAutoHideAsync();
@@ -32,6 +33,7 @@ export default function RootLayout() {
     <>
       <StatusBar style="dark" />
       <QueryClientProvider client={queryClient}>
+        <NetworkBanner />
         <AuthProvider>
           <BagProvider>
             <Stack

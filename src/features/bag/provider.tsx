@@ -6,6 +6,7 @@ import type { BagLine, BagView, CartLine, LineDetail } from '@/lib/types';
 import { applyGuestOp, applyOptimistic, type BagOp } from './ops';
 import { clearGuestBag, loadGuestBag, saveGuestBag } from './guest';
 import { bagMutationKey, bagQueryKey, refreshBag } from './keys';
+import { useBagLive } from './live';
 
 export { bagMutationKey, bagQueryKey, refreshBag } from './keys';
 
@@ -54,6 +55,7 @@ export function BagProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const userId = user?.id ?? null;
   const queryClient = useQueryClient();
+  useBagLive(userId);
   const [notice, setNotice] = useState('');
   const [guest, setGuestState] = useState<CartLine[] | null>(null);
   const guestRef = useRef<CartLine[] | null>(null);

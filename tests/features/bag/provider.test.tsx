@@ -10,6 +10,7 @@ jest.mock('@/lib/api', () => {
   const actual = jest.requireActual('@/lib/api');
   return { ...actual, api: (...args: unknown[]) => mockApi(...args) };
 });
+jest.mock('@/features/bag/live', () => ({ useBagLive: jest.fn() }));
 let mockAuthState = { user: null as null | { id: string }, ready: true };
 jest.mock('@/features/auth/provider', () => ({ useAuth: () => mockAuthState }));
 
