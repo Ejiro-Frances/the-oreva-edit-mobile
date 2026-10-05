@@ -8,7 +8,10 @@ import {
   CormorantGaramond_600SemiBold,
 } from '@expo-google-fonts/cormorant-garamond';
 import { Manrope_400Regular, Manrope_500Medium, Manrope_700Bold } from '@expo-google-fonts/manrope';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { colors } from '@/components/theme';
+import { AuthProvider } from '@/features/auth/provider';
+import { queryClient } from '@/lib/query';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -27,16 +30,23 @@ export default function RootLayout() {
   return (
     <>
       <StatusBar style="dark" />
-      <Stack
-        screenOptions={{
-          contentStyle: { backgroundColor: colors.background },
-          headerStyle: { backgroundColor: colors.background },
-          headerTintColor: colors.foreground,
-          headerShadowVisible: false,
-        }}
-      >
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      </Stack>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <Stack
+            screenOptions={{
+              contentStyle: { backgroundColor: colors.background },
+              headerStyle: { backgroundColor: colors.background },
+              headerTintColor: colors.foreground,
+              headerShadowVisible: false,
+            }}
+          >
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="sign-in" options={{ presentation: 'modal', title: '' }} />
+            <Stack.Screen name="sign-up" options={{ presentation: 'modal', title: '' }} />
+            <Stack.Screen name="forgot-password" options={{ presentation: 'modal', title: '' }} />
+          </Stack>
+        </AuthProvider>
+      </QueryClientProvider>
     </>
   );
 }
