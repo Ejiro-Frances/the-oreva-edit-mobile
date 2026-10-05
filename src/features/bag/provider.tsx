@@ -99,9 +99,16 @@ export function BagProvider({ children }: { children: ReactNode }) {
       .catch((error: unknown) => {
         if (active) setNotice(message(error));
       })
-      .finally(() => setMergedFor(userId));
+      // Only the account still signed in here may mark its bag merged: a slower merge for an
+      // earlier account must not overwrite the current one. A remount shares the same promise,
+      // so its own effect still marks the account merged.
+      .finally(() => {
+        if (active) setMergedFor(userId);
+      });
     return () => {
       active = false;
+      // The next account (or this one, returning) is not merged until its own merge lands.
+      setMergedFor(null);
     };
   }, [userId, queryClient, setGuest]);
 

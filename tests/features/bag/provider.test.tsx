@@ -214,6 +214,55 @@ describe('signed-in bag', () => {
     expect(await AsyncStorage.getItem('oreva-bag-v1')).toBeNull();
   });
 
+  it('keeps the next account ready when an earlier account’s merge lands late', async () => {
+    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 2 }]));
+    const slow = deferred<unknown>();
+    let postsSeen = 0;
+    mockApi.mockImplementation((_path: string, options?: { method?: string }) => {
+      if (options?.method === 'POST') {
+        postsSeen += 1;
+        // user-1's merge hangs; user-2's answers at once.
+        return postsSeen === 1 ? slow.promise : Promise.resolve({ signedIn: true, lines: [], wishlist: [] });
+      }
+      return Promise.resolve({ signedIn: true, lines: [detail(1)], wishlist: [] });
+    });
+    const { client, view } = await renderBag();
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    mockAuthState = { user: null, ready: true };
+    await view.rerender(tree(client));
+    mockAuthState = { user: { id: 'user-2' }, ready: true };
+    await view.rerender(tree(client));
+    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+    await act(async () => slow.resolve({ signedIn: true, lines: [], wishlist: [] }));
+    await flush();
+    expect(screen.getByText('ready:true')).toBeOnTheScreen();
+  });
+
+  it('is not ready for a returning account until its merge lands again', async () => {
+    const second = deferred<unknown>();
+    let postsSeen = 0;
+    mockApi.mockImplementation((_path: string, options?: { method?: string }) => {
+      if (options?.method === 'POST') {
+        postsSeen += 1;
+        return postsSeen === 1 ? Promise.resolve({ signedIn: true, lines: [], wishlist: [] }) : second.promise;
+      }
+      return Promise.resolve({ signedIn: true, lines: [detail(1)], wishlist: [] });
+    });
+    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 1 }]));
+    const { client, view } = await renderBag();
+    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+    mockAuthState = { user: null, ready: true };
+    await view.rerender(tree(client));
+    // Added as a guest, then back to the same account: the new guest line has to merge first.
+    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 1 }]));
+    mockAuthState = { user: { id: 'user-1' }, ready: true };
+    await view.rerender(tree(client));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+    expect(screen.getByText('ready:false')).toBeOnTheScreen();
+    await act(async () => second.resolve({ signedIn: true, lines: [], wishlist: [] }));
+    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+  });
+
   it('keeps the guest bag when the merge fails', async () => {
     await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 2 }]));
     mockApi.mockImplementation(async (_path: string, options?: { method?: string }) => {
