@@ -9,6 +9,7 @@ jest.mock('@/lib/supabase', () => ({
 }));
 jest.mock('@/lib/config', () => ({ apiUrl: 'https://store.test' }));
 
+import { AuthApiError, AuthRetryableFetchError } from '@supabase/supabase-js';
 import { api, ApiError } from '@/lib/api';
 
 const mockAuth = jest.requireMock('@/lib/supabase').supabase.auth;
@@ -78,13 +79,36 @@ describe('api', () => {
 
   it('signs out when the refresh fails, without looping', async () => {
     fetchMock.mockReturnValue(json(401, { error: 'Please sign in again.', code: 'session_expired' }));
-    mockAuth.refreshSession.mockResolvedValue({ error: new Error('expired') });
+    mockAuth.refreshSession.mockResolvedValue({
+      error: new AuthApiError('Invalid Refresh Token: Refresh Token Not Found', 400, 'refresh_token_not_found'),
+    });
     await expect(api('/api/shopping', { auth: true })).rejects.toMatchObject({
       status: 401,
       code: 'session_expired',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mockAuth.signOut).toHaveBeenCalledTimes(1);
+    // Only this device: the website session must survive the app signing out.
+    expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' });
+  });
+
+  it('keeps the session and reports a network error when the refresh cannot reach the server', async () => {
+    fetchMock.mockReturnValue(json(401, { error: 'Please sign in again.', code: 'session_expired' }));
+    mockAuth.refreshSession.mockResolvedValue({ error: new AuthRetryableFetchError('Failed to fetch', 0) });
+    await expect(api('/api/shopping', { auth: true })).rejects.toMatchObject({
+      status: 0,
+      code: 'network',
+      message: "Can't reach the store. Check your connection and try again.",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockAuth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session when the refresh fails with a server error', async () => {
+    fetchMock.mockReturnValue(json(401, { error: 'Please sign in again.', code: 'session_expired' }));
+    mockAuth.refreshSession.mockResolvedValue({ error: new AuthRetryableFetchError('Bad Gateway', 502) });
+    await expect(api('/api/shopping', { auth: true })).rejects.toMatchObject({ status: 0, code: 'network' });
+    expect(mockAuth.signOut).not.toHaveBeenCalled();
   });
 
   it('refuses an authenticated call with no session', async () => {

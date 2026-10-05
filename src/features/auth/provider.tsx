@@ -30,11 +30,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   useEffect(() => {
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return;
-      setUser(data.session?.user ?? null);
-      setReady(true);
-    });
+    supabase.auth
+      .getSession()
+      .then(
+        ({ data }) => data.session?.user ?? null,
+        // A stored session that cannot be read starts the customer as a guest, not a spinner.
+        () => null,
+      )
+      .then((stored) => {
+        if (!active) return;
+        setUser(stored);
+        setReady(true);
+      });
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
     });
@@ -64,7 +71,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return 'signed-in';
     },
     async signOut() {
-      await supabase.auth.signOut();
+      // Local scope: signing out of the app must not end the customer's website session.
+      await supabase.auth.signOut({ scope: 'local' });
       queryClient.removeQueries({ queryKey: ['bag'] });
     },
     async forgotPassword(email) {

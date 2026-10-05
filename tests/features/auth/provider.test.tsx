@@ -20,16 +20,25 @@ jest.mock('@/lib/api', () => {
   return { ...actual, api: (...args: unknown[]) => mockApi(...args) };
 });
 
+// The real query client registers an expo-network listener at import; the provider only needs removeQueries.
+const mockRemoveQueries = jest.fn();
+jest.mock('@/lib/query', () => ({
+  queryClient: { removeQueries: (...args: unknown[]) => mockRemoveQueries(...args) },
+}));
+
 import { AuthProvider, useAuth } from '@/features/auth/provider';
 
 let emit: (event: string, session: unknown) => void = () => {};
 const tokens = { access_token: 'a.b.c', refresh_token: 'r', expires_at: 1 };
 
 function Probe({ onResult }: { onResult?: (r: unknown) => void }) {
-  const { user, ready, signIn, signUp } = useAuth();
+  const { user, ready, signIn, signUp, signOut } = useAuth();
   return (
     <>
       <Text>{ready ? `user:${user?.id ?? 'none'}` : 'loading'}</Text>
+      <Pressable onPress={() => signOut()}>
+        <Text>sign out</Text>
+      </Pressable>
       <Pressable onPress={() => signIn({ email: 'a@b.co', password: 'pw' })}>
         <Text>sign in</Text>
       </Pressable>
@@ -61,6 +70,21 @@ describe('AuthProvider', () => {
   it('starts as a guest once the stored session is read', async () => {
     await render(<AuthProvider><Probe /></AuthProvider>);
     expect(await screen.findByText('user:none')).toBeOnTheScreen();
+  });
+
+  it('starts as a guest when the stored session cannot be read', async () => {
+    mockAuth.getSession.mockRejectedValue(new Error('keychain unavailable'));
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    expect(await screen.findByText('user:none')).toBeOnTheScreen();
+  });
+
+  it('signs out on this device only, keeping the website session, and drops the bag', async () => {
+    mockAuth.signOut.mockResolvedValue({ error: null });
+    const user = userEvent.setup();
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    await user.press(await screen.findByText('sign out'));
+    await waitFor(() => expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' }));
+    await waitFor(() => expect(mockRemoveQueries).toHaveBeenCalledWith({ queryKey: ['bag'] }));
   });
 
   it('signs in through the store API in mobile mode and adopts the session', async () => {

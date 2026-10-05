@@ -1,3 +1,4 @@
+import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { apiUrl } from './config';
 import { supabase } from './supabase';
 
@@ -43,8 +44,9 @@ async function send(path: string, { method = 'GET', body, auth = false }: Option
 }
 
 /**
- * Calls the store API. An expired session is refreshed once and the call retried; if the
- * refresh fails the customer is signed out and the call fails with `session_expired`.
+ * Calls the store API. An expired session is refreshed once and the call retried. If the refresh
+ * cannot reach the server the call fails as a network error; if the server refuses it, the
+ * customer is signed out on this device and the call fails with `session_expired`.
  */
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
   let response = await send(path, options);
@@ -52,7 +54,10 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
   if (options.auth && response.status === 401 && data.code === 'session_expired') {
     const { error } = await supabase.auth.refreshSession();
     if (error) {
-      await supabase.auth.signOut();
+      // A refresh that could not reach the server says nothing about the session: keep it.
+      if (isAuthRetryableFetchError(error)) throw offline();
+      // Local scope: only this device signs out; the customer's website session stays.
+      await supabase.auth.signOut({ scope: 'local' });
       throw expired();
     }
     response = await send(path, options);
