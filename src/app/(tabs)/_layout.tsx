@@ -8,7 +8,7 @@ export default function TabsLayout() {
     <NativeTabs backgroundColor={colors.background} indicatorColor={colors.surface}>
       <NativeTabs.Trigger name="index">
         <NativeTabs.Trigger.Label>Shop</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon sf={{ default: 'bag', selected: 'bag.fill' }} md="storefront" />
+        <NativeTabs.Trigger.Icon sf={{ default: 'storefront', selected: 'storefront.fill' }} md="storefront" />
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="bag">
         <NativeTabs.Trigger.Label>Bag</NativeTabs.Trigger.Label>

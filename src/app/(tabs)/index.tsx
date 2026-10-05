@@ -24,21 +24,28 @@ export default function ShopScreen() {
         data={products}
         keyExtractor={(p) => p.id}
         numColumns={2}
-        renderItem={({ item }) => <ProductCard product={item} />}
+        // Each cell is exactly half the row, so a lone last card keeps its size; the 6pt cell
+        // padding makes the 12pt gap between columns and, with the list's 10pt, a 16pt edge.
+        renderItem={({ item }) => (
+          <View style={{ width: '50%', paddingHorizontal: 6 }}>
+            <ProductCard product={item} />
+          </View>
+        )}
         onEndReached={() => hasNextPage && !isFetchingNextPage && fetchNextPage()}
         onEndReachedThreshold={0.5}
         refreshing={isRefetching}
         onRefresh={refetch}
-        columnWrapperStyle={{ gap: 12 }}
-        contentContainerStyle={{ padding: 16, gap: 16 }}
+        contentContainerStyle={{ paddingVertical: 16, paddingHorizontal: 10, gap: 16 }}
         ListEmptyComponent={
-          isLoading ? (
-            <ActivityIndicator color={colors.foreground} />
-          ) : error ? (
-            <ErrorState message={error.message} onRetry={() => refetch()} />
-          ) : (
-            <AppText variant="muted">Nothing here yet</AppText>
-          )
+          <View style={{ paddingHorizontal: 6 }}>
+            {isLoading ? (
+              <ActivityIndicator color={colors.foreground} />
+            ) : error ? (
+              <ErrorState message={error.message} onRetry={() => refetch()} />
+            ) : (
+              <AppText variant="muted">Nothing here yet</AppText>
+            )}
+          </View>
         }
       />
     </SafeAreaView>
