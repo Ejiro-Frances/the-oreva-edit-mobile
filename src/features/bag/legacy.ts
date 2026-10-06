@@ -4,12 +4,12 @@ import type { CartLine } from '@/lib/types';
 
 const KEY = 'oreva-bag-v1';
 
-export async function loadGuestBag(): Promise<CartLine[]> {
+/** A guest bag an older version kept on the phone; it is uploaded once, then removed. */
+export async function loadLegacyBag(): Promise<CartLine[]> {
   try {
     return cartSchema.parse(JSON.parse((await AsyncStorage.getItem(KEY)) ?? '[]'));
   } catch {
-    return []; // Corrupt storage starts empty.
+    return [];
   }
 }
-export const saveGuestBag = (lines: CartLine[]) => AsyncStorage.setItem(KEY, JSON.stringify(lines));
-export const clearGuestBag = () => AsyncStorage.removeItem(KEY);
+export const clearLegacyBag = () => AsyncStorage.removeItem(KEY);

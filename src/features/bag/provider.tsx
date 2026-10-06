@@ -1,10 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/features/auth/provider';
-import type { BagLine, BagView, CartLine, LineDetail } from '@/lib/types';
-import { applyGuestOp, applyOptimistic, type BagOp } from './ops';
-import { clearGuestBag, loadGuestBag, saveGuestBag } from './guest';
+import type { BagLine, BagView } from '@/lib/types';
+import { applyOptimistic, type BagOp } from './ops';
+import { clearLegacyBag, loadLegacyBag } from './legacy';
 import { bagMutationKey, bagQueryKey, refreshBag } from './keys';
 import { useBagLive } from './live';
 
@@ -31,92 +31,71 @@ const message = (error: unknown) => (error instanceof ApiError && error.code ===
 const asApiError = (error: Error | null) =>
   !error ? null : error instanceof ApiError ? error : new ApiError(error.message || FAILED, 0);
 
-const sameLines = (a: CartLine[], b: CartLine[]) =>
-  a.length === b.length && a.every((l) => b.some((m) => m.variantId === l.variantId && m.quantity === l.quantity));
-
-// One merge per account at a time: a remount, or signing out and quickly back in, shares the POST in flight.
-const merges = new Map<string, Promise<boolean>>();
-function mergeGuestBag(userId: string) {
-  let pending = merges.get(userId);
+/**
+ * Settles where the bag lives, once per identity (a remount shares the request in flight):
+ * signed in, the guest bag and any old on-phone bag move into the account; as a guest, an old
+ * on-phone bag is uploaded. The old key is removed only after the server accepted it.
+ * Resolves true when something was sent, so the bag is worth reading again.
+ */
+const settles = new Map<string, Promise<boolean>>();
+function settleBag(userId: string | null) {
+  const key = userId ?? 'guest';
+  let pending = settles.get(key);
   if (!pending) {
     pending = (async () => {
-      const lines = await loadGuestBag();
-      if (!lines.length) return false;
-      await api('/api/shopping', { method: 'POST', auth: true, body: { action: 'merge', lines, wishlist: [] } });
-      await clearGuestBag();
+      const lines = await loadLegacyBag();
+      if (!userId && !lines.length) return false;
+      await api('/api/shopping', {
+        method: 'POST',
+        auth: !!userId,
+        guest: true,
+        body: { action: 'merge', lines, wishlist: [] },
+      });
+      await clearLegacyBag();
       return true;
-    })().finally(() => merges.delete(userId));
-    merges.set(userId, pending);
+    })().finally(() => settles.delete(key));
+    settles.set(key, pending);
   }
   return pending;
 }
 
 export function BagProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, ready: authReady } = useAuth();
   const userId = user?.id ?? null;
+  const identity = userId ?? 'guest';
   const queryClient = useQueryClient();
   useBagLive(userId);
   const [notice, setNotice] = useState('');
-  const [guest, setGuestState] = useState<CartLine[] | null>(null);
-  const guestRef = useRef<CartLine[] | null>(null);
-  const guestQueue = useRef<Promise<unknown>>(Promise.resolve());
-  // The account whose sign-in merge has finished; until then its bag is not ready.
-  const [mergedFor, setMergedFor] = useState<string | null>(null);
+  // The identity whose settle step has finished; until then its bag is not ready.
+  const [settledFor, setSettledFor] = useState<string | null>(null);
   const latest = useRef(0);
   const inFlight = useRef(0);
 
-  const setGuest = useCallback((lines: CartLine[]) => {
-    guestRef.current = lines;
-    setGuestState(lines);
-  }, []);
-
-  // Guest bag: loaded from the device; details come from the public variants endpoint.
   useEffect(() => {
-    if (userId) return;
-    guestRef.current = null;
-    loadGuestBag().then((lines) => {
-      if (guestRef.current === null) setGuest(lines);
-    });
-  }, [userId, setGuest]);
-  const guestIds = (guest ?? []).map((l) => l.variantId).sort().join(',');
-  const guestDetails = useQuery({
-    queryKey: ['guest-lines', guestIds],
-    enabled: !userId && guestIds.length > 0,
-    placeholderData: keepPreviousData,
-    queryFn: () => api<{ lines: LineDetail[] }>(`/api/catalogue/variants?ids=${guestIds}`),
-  });
-
-  // Signing in joins the guest bag to the account exactly once, then clears it.
-  useEffect(() => {
-    if (!userId) return;
+    if (!authReady) return;
     let active = true;
-    mergeGuestBag(userId)
-      .then((merged) => {
-        if (!merged) return;
-        setGuest([]); // Storage is clear now, whoever is signed in by the time this lands.
-        return refreshBag(queryClient, userId);
-      })
-      .catch((error: unknown) => {
+    settleBag(userId)
+      .then((sent) => (sent ? refreshBag(queryClient, userId) : undefined))
+      .catch((error) => {
         if (active) setNotice(message(error));
       })
-      // Only the account still signed in here may mark its bag merged: a slower merge for an
-      // earlier account must not overwrite the current one. A remount shares the same promise,
-      // so its own effect still marks the account merged.
+      // Only the identity still current here may mark itself settled; a remount shares the same
+      // promise, so its own effect still marks it.
       .finally(() => {
-        if (active) setMergedFor(userId);
+        if (active) setSettledFor(identity);
       });
     return () => {
       active = false;
-      // The next account (or this one, returning) is not merged until its own merge lands.
-      setMergedFor(null);
+      // The next identity (or this one, returning) is not settled until its own step lands.
+      setSettledFor(null);
     };
-  }, [userId, queryClient, setGuest]);
+  }, [authReady, userId, identity, queryClient]);
 
   const bag = useQuery({
     queryKey: bagQueryKey(userId),
-    enabled: !!userId,
+    enabled: authReady,
     queryFn: async () => {
-      const view = await api<BagView>('/api/shopping', { auth: true });
+      const view = await api<BagView>('/api/shopping', { auth: !!userId, guest: true });
       // A reply that lands while a change is on its way may predate it: keep what is shown,
       // and let the refetch after the last change settles bring the server's answer.
       if (inFlight.current > 0) return queryClient.getQueryData<BagView>(bagQueryKey(userId)) ?? view;
@@ -126,7 +105,8 @@ export function BagProvider({ children }: { children: ReactNode }) {
 
   const change = useMutation({
     mutationKey: bagMutationKey,
-    mutationFn: (op: BagOp) => api<BagView>('/api/shopping', { method: 'PATCH', auth: true, body: { ops: [op] } }),
+    mutationFn: (op: BagOp) =>
+      api<BagView>('/api/shopping', { method: 'PATCH', auth: !!userId, guest: true, body: { ops: [op] } }),
     onMutate: async (op) => {
       inFlight.current += 1;
       const request = ++latest.current;
@@ -144,7 +124,6 @@ export function BagProvider({ children }: { children: ReactNode }) {
       if (context?.request === latest.current && context.previous)
         queryClient.setQueryData(bagQueryKey(userId), context.previous);
       setNotice(message(error));
-      // No refetch here: the one in onSettled runs once no change is left in flight.
     },
     onSettled: () => {
       // isMutating() still counts the settling change inside onSettled, so the provider keeps its own count.
@@ -153,70 +132,33 @@ export function BagProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  // Guest changes run one after another so quick taps compose; false means the bag did not change.
-  const changeGuest = useCallback(
-    (op: BagOp, stock: number) => {
-      const run = guestQueue.current.then(async () => {
-        const current = guestRef.current ?? (await loadGuestBag());
-        const { lines, capped } = applyGuestOp(current, op, stock);
-        if (capped) setNotice(CAPPED);
-        if (sameLines(current, lines)) {
-          if (guestRef.current === null) setGuest(current);
-          return false;
-        }
-        setGuest(lines);
-        await saveGuestBag(lines);
-        return true;
-      });
-      guestQueue.current = run.catch(() => undefined);
-      return run.catch(() => {
-        setNotice(FAILED);
-        return false;
-      });
-    },
-    [setGuest],
-  );
-
-  const stockOf = (variantId: string) =>
-    (userId ? bag.data?.lines : guestDetails.data?.lines)?.find((l) => l.variantId === variantId)?.variant.stock ?? 20;
-
-  const guestLines: BagLine[] = (guest ?? []).flatMap((line) => {
-    const found = guestDetails.data?.lines.find((d) => d.variantId === line.variantId);
-    return found ? [{ ...found, quantity: Math.min(line.quantity, found.variant.stock, 20) }] : [];
-  });
-  const lines = userId ? (bag.data?.lines ?? []) : guestLines;
-  const guestReady = guest !== null && (guestIds === '' || guestDetails.data !== undefined || guestDetails.isError);
-
+  const lines = bag.data?.lines ?? [];
   const value: BagContext = {
     lines,
     count: lines.reduce((n, l) => n + l.quantity, 0),
-    ready: userId ? bag.isFetched && mergedFor === userId : guestReady,
+    ready: authReady && bag.isFetched && settledFor === identity,
     signedIn: !!userId,
     notice,
     clearNotice: () => setNotice(''),
-    error: asApiError(userId ? bag.error : guestIds ? guestDetails.error : null),
-    retry: () => void (userId ? bag.refetch() : guestDetails.refetch()),
-    async add(variantId, quantity, stock) {
-      const op: BagOp = { op: 'add', variantId, quantity };
-      if (!userId) return changeGuest(op, stock);
+    error: asApiError(bag.error),
+    retry: () => void bag.refetch(),
+    async add(variantId, quantity) {
       const quantityOf = (view?: BagView) => view?.lines.find((l) => l.variantId === variantId)?.quantity ?? 0;
       const before = quantityOf(queryClient.getQueryData<BagView>(bagQueryKey(userId)));
       try {
         // Added only if the server's answer holds more than the bag did (a capped add may add nothing).
-        return quantityOf(await change.mutateAsync(op)) > before;
+        return quantityOf(await change.mutateAsync({ op: 'add', variantId, quantity })) > before;
       } catch {
         return false;
       }
     },
     setQuantity(variantId, quantity) {
-      const op: BagOp = quantity <= 0 ? { op: 'remove', variantId } : { op: 'set', variantId, quantity: Math.min(quantity, 20) };
-      if (userId) change.mutate(op);
-      else void changeGuest(op, stockOf(variantId));
+      change.mutate(
+        quantity <= 0 ? { op: 'remove', variantId } : { op: 'set', variantId, quantity: Math.min(quantity, 20) },
+      );
     },
     remove(variantId) {
-      const op: BagOp = { op: 'remove', variantId };
-      if (userId) change.mutate(op);
-      else void changeGuest(op, 0);
+      change.mutate({ op: 'remove', variantId });
     },
   };
   return <Context.Provider value={value}>{children}</Context.Provider>;

@@ -18,7 +18,7 @@ import { ApiError } from '@/lib/api';
 import { BagProvider, useBag } from '@/features/bag/provider';
 
 const A = '00000000-0000-4000-8000-000000000001';
-const B = '00000000-0000-4000-8000-000000000002';
+const LEGACY = 'oreva-bag-v1';
 const detail = (quantity: number, variantId = A) => ({
   variantId,
   quantity,
@@ -34,7 +34,8 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-type Call = [string, { method?: string } | undefined];
+type Options = { method?: string; auth?: boolean; guest?: boolean; body?: unknown };
+type Call = [string, Options | undefined];
 const calls = () => mockApi.mock.calls as Call[];
 const gets = () => calls().filter(([path, o]) => path === '/api/shopping' && !o?.method).length;
 const posts = () => calls().filter(([, o]) => o?.method === 'POST');
@@ -54,15 +55,6 @@ function Probe() {
       <Text>{`error:${bag.error?.message ?? ''}`}</Text>
       <Text>{`result:${result}`}</Text>
       <Pressable onPress={async () => setResult(String(await bag.add(A, 1, 5)))}><Text>add</Text></Pressable>
-      <Pressable onPress={() => bag.add(B, 1, 5)}><Text>addB</Text></Pressable>
-      <Pressable
-        onPress={() => {
-          void bag.add(A, 1, 5);
-          void bag.add(A, 1, 5);
-        }}
-      >
-        <Text>add2</Text>
-      </Pressable>
       <Pressable onPress={() => bag.setQuantity(A, 4)}><Text>set4</Text></Pressable>
       <Pressable onPress={() => bag.setQuantity(A, 3)}><Text>set3</Text></Pressable>
       <Pressable onPress={bag.retry}><Text>retry</Text></Pressable>
@@ -82,6 +74,12 @@ const renderBag = async () => {
   const view = await render(tree(client));
   return { client, view };
 };
+/** Waits until the bag has settled and loaded, then checks it shows `count`. */
+const loaded = async (count: number) => {
+  await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+  expect(screen.getByText(`count:${count}`)).toBeOnTheScreen();
+};
+const bagView = (lines: ReturnType<typeof detail>[], signedIn = true) => ({ signedIn, lines, wishlist: [] });
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -90,92 +88,80 @@ beforeEach(async () => {
   mockAuthState = { user: null, ready: true };
 });
 
-describe('guest bag', () => {
-  it('keeps lines on the device without calling the shopping API', async () => {
-    mockApi.mockResolvedValue({ lines: [detail(1)] }); // variants lookup
-    const user = userEvent.setup();
-    await renderBag();
-    await user.press(screen.getByText('add'));
-    await waitFor(() => expect(screen.getByText('count:1')).toBeOnTheScreen());
-    expect(JSON.parse((await AsyncStorage.getItem('oreva-bag-v1'))!)).toEqual([{ variantId: A, quantity: 1 }]);
-    expect(mockApi.mock.calls.some(([path]) => path === '/api/shopping')).toBe(false);
-    expect(screen.getByText('result:true')).toBeOnTheScreen();
-  });
-
-  it('composes two adds made in the same moment', async () => {
-    mockApi.mockResolvedValue({ lines: [detail(2)] });
-    const user = userEvent.setup();
-    await renderBag();
-    await user.press(screen.getByText('add2'));
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
-    expect(JSON.parse((await AsyncStorage.getItem('oreva-bag-v1'))!)).toEqual([{ variantId: A, quantity: 2 }]);
-  });
-
-  it('reports nothing added when the line is already at stock', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 5 }]));
-    mockApi.mockResolvedValue({ lines: [detail(5)] });
-    const user = userEvent.setup();
-    await renderBag();
-    await waitFor(() => expect(screen.getByText('count:5')).toBeOnTheScreen());
-    await user.press(screen.getByText('add'));
-    await waitFor(() => expect(screen.getByText('result:false')).toBeOnTheScreen());
-    expect(screen.getByText("notice:Quantity updated to what's in stock")).toBeOnTheScreen();
-    expect(JSON.parse((await AsyncStorage.getItem('oreva-bag-v1'))!)).toEqual([{ variantId: A, quantity: 5 }]);
-  });
-
-  it('reports nothing added when the bag already holds 50 lines', async () => {
-    const full = Array.from({ length: 50 }, (_, i) => ({
-      variantId: `00000000-0000-4000-8000-${String(100 + i).padStart(12, '0')}`,
-      quantity: 1,
-    }));
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify(full));
-    mockApi.mockResolvedValue({ lines: [] });
-    const user = userEvent.setup();
-    await renderBag();
-    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
-    await user.press(screen.getByText('add'));
-    await waitFor(() => expect(screen.getByText('result:false')).toBeOnTheScreen());
-    expect(JSON.parse((await AsyncStorage.getItem('oreva-bag-v1'))!)).toHaveLength(50);
-  });
-
-  it('is not ready, rather than empty, while line details load', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 1 }]));
-    const variants = deferred<unknown>();
-    mockApi.mockReturnValue(variants.promise);
-    await renderBag();
+describe('before the session is known', () => {
+  it('makes no request and is not ready', async () => {
+    mockAuthState = { user: null, ready: false };
+    mockApi.mockResolvedValue(bagView([detail(1)], false));
+    const { client, view } = await renderBag();
     await flush();
+    expect(mockApi).not.toHaveBeenCalled();
     expect(screen.getByText('ready:false')).toBeOnTheScreen();
-    await act(async () => variants.resolve({ lines: [detail(1)] }));
-    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
-    expect(screen.getByText('count:1')).toBeOnTheScreen();
+    mockAuthState = { user: null, ready: true };
+    await view.rerender(tree(client));
+    await loaded(1);
   });
+});
 
-  it('keeps the count while details for a new line load', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 1 }]));
-    mockApi.mockResolvedValueOnce({ lines: [detail(1)] });
+describe('guest bag', () => {
+  it('lives on the server: reads and adds with the guest token, never writing to the phone', async () => {
+    // The AsyncStorage mock is already a jest.fn: spying returns it, and restoring would wipe its implementation.
+    const setItem = jest.spyOn(AsyncStorage, 'setItem');
+    mockApi.mockImplementation(async (_path: string, options?: Options) =>
+      options?.method === 'PATCH' ? { ...bagView([detail(2)], false), adjusted: [] } : bagView([detail(1)], false),
+    );
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:1')).toBeOnTheScreen());
-    const variants = deferred<unknown>();
-    mockApi.mockReturnValue(variants.promise);
-    await user.press(screen.getByText('addB'));
+    await loaded(1);
+    expect(mockApi).toHaveBeenCalledWith('/api/shopping', { auth: false, guest: true });
+    await user.press(screen.getByText('add'));
+    await waitFor(() => expect(screen.getByText('result:true')).toBeOnTheScreen());
+    expect(mockApi).toHaveBeenCalledWith('/api/shopping', {
+      method: 'PATCH',
+      auth: false,
+      guest: true,
+      body: { ops: [{ op: 'add', variantId: A, quantity: 1 }] },
+    });
     await flush();
-    expect(screen.getByText('count:1')).toBeOnTheScreen();
-    expect(screen.getByText('ready:true')).toBeOnTheScreen();
-    await act(async () => variants.resolve({ lines: [detail(1), detail(1, B)] }));
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    expect(setItem).not.toHaveBeenCalled();
   });
 
-  it('shows an error, not an empty bag, when details fail, and retries', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 1 }]));
-    mockApi.mockRejectedValueOnce(offline()).mockResolvedValue({ lines: [detail(1)] });
-    const user = userEvent.setup();
+  it('uploads a bag an older version kept on the phone once, then removes it', async () => {
+    await AsyncStorage.setItem(LEGACY, JSON.stringify([{ variantId: A, quantity: 2 }]));
+    mockApi.mockResolvedValue(bagView([detail(2)], false));
+    const first = await renderBag();
+    await loaded(2);
+    expect(posts()).toEqual([
+      [
+        '/api/shopping',
+        { method: 'POST', auth: false, guest: true, body: { action: 'merge', lines: [{ variantId: A, quantity: 2 }], wishlist: [] } },
+      ],
+    ]);
+    expect(await AsyncStorage.getItem(LEGACY)).toBeNull();
+    await first.view.unmount();
     await renderBag();
-    await waitFor(() => expect(screen.getByText(/error:Can't reach the store/)).toBeOnTheScreen());
-    expect(screen.getByText('ready:true')).toBeOnTheScreen();
-    await user.press(screen.getByText('retry'));
-    await waitFor(() => expect(screen.getByText('count:1')).toBeOnTheScreen());
-    expect(screen.getByText('error:')).toBeOnTheScreen();
+    await loaded(2);
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('sends no merge when the phone holds no old bag', async () => {
+    mockApi.mockResolvedValue(bagView([], false));
+    await renderBag();
+    await loaded(0);
+    expect(posts()).toHaveLength(0);
+    // Nothing moved, so the first read stands: no second request on every launch.
+    expect(gets()).toBe(1);
+  });
+
+  it('keeps the old bag and still loads when the upload fails', async () => {
+    await AsyncStorage.setItem(LEGACY, JSON.stringify([{ variantId: A, quantity: 2 }]));
+    mockApi.mockImplementation(async (_path: string, options?: Options) => {
+      if (options?.method === 'POST') throw offline();
+      return bagView([detail(1)], false);
+    });
+    await renderBag();
+    await loaded(1);
+    expect(screen.getByText(/notice:Can't reach the store/)).toBeOnTheScreen();
+    expect(await AsyncStorage.getItem(LEGACY)).not.toBeNull();
   });
 });
 
@@ -184,47 +170,66 @@ describe('signed-in bag', () => {
     mockAuthState = { user: { id: 'user-1' }, ready: true };
   });
 
-  it('merges a guest bag once when the customer signs in, then clears it', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 2 }]));
-    mockApi.mockImplementation(async (path: string, options?: { method?: string }) =>
-      options?.method === 'POST' ? { signedIn: true, userId: 'user-1', lines: [{ variantId: A, quantity: 2 }], wishlist: [] } : { signedIn: true, lines: [detail(2)], wishlist: [] },
+  it('moves the guest bag into the account once per sign-in, then reads the account bag', async () => {
+    const merge = deferred<unknown>();
+    mockApi.mockImplementation((_path: string, options?: Options) =>
+      options?.method === 'POST' ? merge.promise : Promise.resolve(bagView([detail(2)])),
     );
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
-    const merges = mockApi.mock.calls.filter(([, o]) => o?.method === 'POST');
-    expect(merges).toHaveLength(1);
-    expect(merges[0]).toEqual(['/api/shopping', { method: 'POST', auth: true, body: { action: 'merge', lines: [{ variantId: A, quantity: 2 }], wishlist: [] } }]);
-    expect(await AsyncStorage.getItem('oreva-bag-v1')).toBeNull();
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0]).toEqual([
+      '/api/shopping',
+      { method: 'POST', auth: true, guest: true, body: { action: 'merge', lines: [], wishlist: [] } },
+    ]);
+    await flush();
+    expect(screen.getByText('ready:false')).toBeOnTheScreen();
+    const before = gets();
+    await act(async () => merge.resolve(bagView([detail(2)])));
+    await loaded(2);
+    expect(gets()).toBeGreaterThan(before);
+    expect(mockApi).toHaveBeenCalledWith('/api/shopping', { auth: true, guest: true });
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('includes a bag an older version kept on the phone, then removes it', async () => {
+    await AsyncStorage.setItem(LEGACY, JSON.stringify([{ variantId: A, quantity: 2 }]));
+    mockApi.mockResolvedValue(bagView([detail(2)]));
+    await renderBag();
+    await loaded(2);
+    expect(posts()).toEqual([
+      [
+        '/api/shopping',
+        { method: 'POST', auth: true, guest: true, body: { action: 'merge', lines: [{ variantId: A, quantity: 2 }], wishlist: [] } },
+      ],
+    ]);
+    expect(await AsyncStorage.getItem(LEGACY)).toBeNull();
   });
 
   it('posts the merge once when the provider remounts while it is in flight', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 2 }]));
     const merge = deferred<unknown>();
-    mockApi.mockImplementation((_path: string, options?: { method?: string }) =>
-      options?.method === 'POST' ? merge.promise : Promise.resolve({ signedIn: true, lines: [detail(2)], wishlist: [] }),
+    mockApi.mockImplementation((_path: string, options?: Options) =>
+      options?.method === 'POST' ? merge.promise : Promise.resolve(bagView([detail(2)])),
     );
     const { client, view } = await renderBag();
     await waitFor(() => expect(posts()).toHaveLength(1));
     await view.unmount();
     await render(tree(client));
     await flush();
-    await act(async () => merge.resolve({ signedIn: true, lines: [], wishlist: [] }));
-    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+    await act(async () => merge.resolve(bagView([])));
+    await loaded(2);
     expect(posts()).toHaveLength(1);
-    expect(await AsyncStorage.getItem('oreva-bag-v1')).toBeNull();
   });
 
   it('keeps the next account ready when an earlier account’s merge lands late', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 2 }]));
     const slow = deferred<unknown>();
     let postsSeen = 0;
-    mockApi.mockImplementation((_path: string, options?: { method?: string }) => {
+    mockApi.mockImplementation((_path: string, options?: Options) => {
       if (options?.method === 'POST') {
         postsSeen += 1;
         // user-1's merge hangs; user-2's answers at once.
-        return postsSeen === 1 ? slow.promise : Promise.resolve({ signedIn: true, lines: [], wishlist: [] });
+        return postsSeen === 1 ? slow.promise : Promise.resolve(bagView([]));
       }
-      return Promise.resolve({ signedIn: true, lines: [detail(1)], wishlist: [] });
+      return Promise.resolve(bagView([detail(1)]));
     });
     const { client, view } = await renderBag();
     await waitFor(() => expect(posts()).toHaveLength(1));
@@ -233,7 +238,7 @@ describe('signed-in bag', () => {
     mockAuthState = { user: { id: 'user-2' }, ready: true };
     await view.rerender(tree(client));
     await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
-    await act(async () => slow.resolve({ signedIn: true, lines: [], wishlist: [] }));
+    await act(async () => slow.resolve(bagView([])));
     await flush();
     expect(screen.getByText('ready:true')).toBeOnTheScreen();
   });
@@ -241,44 +246,54 @@ describe('signed-in bag', () => {
   it('is not ready for a returning account until its merge lands again', async () => {
     const second = deferred<unknown>();
     let postsSeen = 0;
-    mockApi.mockImplementation((_path: string, options?: { method?: string }) => {
+    mockApi.mockImplementation((_path: string, options?: Options) => {
       if (options?.method === 'POST') {
         postsSeen += 1;
-        return postsSeen === 1 ? Promise.resolve({ signedIn: true, lines: [], wishlist: [] }) : second.promise;
+        return postsSeen === 1 ? Promise.resolve(bagView([])) : second.promise;
       }
-      return Promise.resolve({ signedIn: true, lines: [detail(1)], wishlist: [] });
+      return Promise.resolve(bagView([detail(1)]));
     });
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 1 }]));
     const { client, view } = await renderBag();
-    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+    await loaded(1);
+    // Signed out only briefly: the guest settle is still reading the phone when the account returns.
+    const guestRead = deferred<string | null>();
+    jest.mocked(AsyncStorage.getItem).mockImplementationOnce(() => guestRead.promise);
     mockAuthState = { user: null, ready: true };
     await view.rerender(tree(client));
-    // Added as a guest, then back to the same account: the new guest line has to merge first.
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 1 }]));
     mockAuthState = { user: { id: 'user-1' }, ready: true };
     await view.rerender(tree(client));
     await waitFor(() => expect(posts()).toHaveLength(2));
     expect(screen.getByText('ready:false')).toBeOnTheScreen();
-    await act(async () => second.resolve({ signedIn: true, lines: [], wishlist: [] }));
+    await act(async () => second.resolve(bagView([])));
     await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+    await act(async () => guestRead.resolve(null));
   });
 
-  it('keeps the guest bag when the merge fails', async () => {
-    await AsyncStorage.setItem('oreva-bag-v1', JSON.stringify([{ variantId: A, quantity: 2 }]));
-    mockApi.mockImplementation(async (_path: string, options?: { method?: string }) => {
+  it('explains a failed merge, keeps the old bag, and still loads the account bag', async () => {
+    await AsyncStorage.setItem(LEGACY, JSON.stringify([{ variantId: A, quantity: 2 }]));
+    mockApi.mockImplementation(async (_path: string, options?: Options) => {
       if (options?.method === 'POST') throw offline();
-      return { signedIn: true, lines: [], wishlist: [] };
+      return bagView([detail(1)]);
     });
     await renderBag();
-    await waitFor(() => expect(screen.getByText(/notice:Can't reach the store/)).toBeOnTheScreen());
-    expect(await AsyncStorage.getItem('oreva-bag-v1')).not.toBeNull();
+    await loaded(1);
+    expect(screen.getByText(/notice:Can't reach the store/)).toBeOnTheScreen();
+    expect(await AsyncStorage.getItem(LEGACY)).not.toBeNull();
   });
 
   it('shows an error, not an empty bag, when the bag cannot be loaded, and retries', async () => {
-    mockApi.mockRejectedValueOnce(offline()).mockResolvedValue({ signedIn: true, lines: [detail(2)], wishlist: [] });
+    // Reads fail until the customer retries: the first load and the refresh after the merge.
+    let failing = true;
+    mockApi.mockImplementation(async (_path: string, options?: Options) => {
+      if (!options?.method && failing) throw offline();
+      return bagView([detail(2)]);
+    });
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText(/error:Can't reach the store/)).toBeOnTheScreen());
+    await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
+    expect(screen.getByText(/error:Can't reach the store/)).toBeOnTheScreen();
+    expect(screen.getByText('count:0')).toBeOnTheScreen();
+    failing = false;
     await user.press(screen.getByText('retry'));
     await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
     expect(screen.getByText('error:')).toBeOnTheScreen();
@@ -287,42 +302,59 @@ describe('signed-in bag', () => {
   it('applies a quantity change at once and keeps the server answer', async () => {
     // The server answers GET with whatever the last PATCH left behind.
     let server = [detail(2)];
-    mockApi.mockImplementation(async (_path: string, options?: { method?: string }) => {
+    mockApi.mockImplementation(async (_path: string, options?: Options) => {
       if (options?.method === 'PATCH') {
         server = [detail(4)];
-        return { signedIn: true, lines: server, wishlist: [], adjusted: [] };
+        return { ...bagView(server), adjusted: [] };
       }
-      return { signedIn: true, lines: server, wishlist: [] };
+      return bagView(server);
     });
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    await loaded(2);
     await user.press(screen.getByText('set4'));
     expect(screen.getByText('count:4')).toBeOnTheScreen();
-    expect(mockApi).toHaveBeenCalledWith('/api/shopping', { method: 'PATCH', auth: true, body: { ops: [{ op: 'set', variantId: A, quantity: 4 }] } });
+    expect(mockApi).toHaveBeenCalledWith('/api/shopping', {
+      method: 'PATCH',
+      auth: true,
+      guest: true,
+      body: { ops: [{ op: 'set', variantId: A, quantity: 4 }] },
+    });
   });
 
   it('rolls back and explains a rejected change', async () => {
-    mockApi.mockImplementation(async (_path: string, options?: { method?: string }) => {
+    mockApi.mockImplementation(async (_path: string, options?: Options) => {
       if (options?.method === 'PATCH') throw new ApiError('nope', 500);
-      return { signedIn: true, lines: [detail(2)], wishlist: [] };
+      return bagView([detail(2)]);
     });
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    await loaded(2);
     await user.press(screen.getByText('set4'));
     await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
     expect(screen.getByText('notice:Your bag could not be updated. Please try again.')).toBeOnTheScreen();
   });
 
+  it('reports an add the server took as added', async () => {
+    mockApi.mockImplementation(async (_path: string, options?: Options) =>
+      options?.method === 'PATCH' ? { ...bagView([detail(3)]), adjusted: [] } : bagView([detail(2)]),
+    );
+    const user = userEvent.setup();
+    await renderBag();
+    await loaded(2);
+    await user.press(screen.getByText('add'));
+    await waitFor(() => expect(screen.getByText('result:true')).toBeOnTheScreen());
+    await flush();
+  });
+
   it('reports a failed add as nothing added', async () => {
-    mockApi.mockImplementation(async (_path: string, options?: { method?: string }) => {
+    mockApi.mockImplementation(async (_path: string, options?: Options) => {
       if (options?.method === 'PATCH') throw offline();
-      return { signedIn: true, lines: [detail(2)], wishlist: [] };
+      return bagView([detail(2)]);
     });
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    await loaded(2);
     await user.press(screen.getByText('add'));
     await waitFor(() => expect(screen.getByText('result:false')).toBeOnTheScreen());
     expect(screen.getByText(/notice:Can't reach the store/)).toBeOnTheScreen();
@@ -330,30 +362,28 @@ describe('signed-in bag', () => {
 
   it('tells the customer when the server capped a quantity', async () => {
     let server = [detail(2)];
-    mockApi.mockImplementation(async (_path: string, options?: { method?: string }) => {
+    mockApi.mockImplementation(async (_path: string, options?: Options) => {
       if (options?.method === 'PATCH') {
         server = [detail(5)];
-        return { signedIn: true, lines: server, wishlist: [], adjusted: [A] };
+        return { ...bagView(server), adjusted: [A] };
       }
-      return { signedIn: true, lines: server, wishlist: [] };
+      return bagView(server);
     });
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    await loaded(2);
     await user.press(screen.getByText('add'));
     await waitFor(() => expect(screen.getByText("notice:Quantity updated to what's in stock")).toBeOnTheScreen());
     await act(async () => {});
   });
 
   it('reports nothing added when the server capped an add at what the bag held', async () => {
-    mockApi.mockImplementation(async (_path: string, options?: { method?: string }) =>
-      options?.method === 'PATCH'
-        ? { signedIn: true, lines: [detail(5)], wishlist: [], adjusted: [A] }
-        : { signedIn: true, lines: [detail(5)], wishlist: [] },
+    mockApi.mockImplementation(async (_path: string, options?: Options) =>
+      options?.method === 'PATCH' ? { ...bagView([detail(5)]), adjusted: [A] } : bagView([detail(5)]),
     );
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:5')).toBeOnTheScreen());
+    await loaded(5);
     await user.press(screen.getByText('add'));
     await waitFor(() => expect(screen.getByText('result:false')).toBeOnTheScreen());
     expect(screen.getByText("notice:Quantity updated to what's in stock")).toBeOnTheScreen();
@@ -362,12 +392,12 @@ describe('signed-in bag', () => {
   it('does not let a bag read that lands during a change overwrite it', async () => {
     let server = [detail(2)];
     const patch = deferred<unknown>();
-    mockApi.mockImplementation((_path: string, options?: { method?: string }) =>
-      options?.method === 'PATCH' ? patch.promise : Promise.resolve({ signedIn: true, lines: server, wishlist: [] }),
+    mockApi.mockImplementation((_path: string, options?: Options) =>
+      options?.method === 'PATCH' ? patch.promise : Promise.resolve(bagView(server)),
     );
     const user = userEvent.setup();
     const { client } = await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    await loaded(2);
     await user.press(screen.getByText('set4'));
     await waitFor(() => expect(screen.getByText('count:4')).toBeOnTheScreen());
     // e.g. a reconnect or a Realtime nudge refetches while the PATCH is still out
@@ -376,7 +406,7 @@ describe('signed-in bag', () => {
     await flush();
     expect(screen.getByText('count:4')).toBeOnTheScreen();
     server = [detail(4)];
-    await act(async () => patch.resolve({ signedIn: true, lines: server, wishlist: [], adjusted: [] }));
+    await act(async () => patch.resolve({ ...bagView(server), adjusted: [] }));
     await waitFor(() => expect(screen.getByText('count:4')).toBeOnTheScreen());
   });
 
@@ -385,21 +415,21 @@ describe('signed-in bag', () => {
     const first = deferred<unknown>();
     const second = deferred<unknown>();
     const patches = [first.promise, second.promise];
-    mockApi.mockImplementation((_path: string, options?: { method?: string }) =>
-      options?.method === 'PATCH' ? patches.shift()! : Promise.resolve({ signedIn: true, lines: server, wishlist: [] }),
+    mockApi.mockImplementation((_path: string, options?: Options) =>
+      options?.method === 'PATCH' ? patches.shift()! : Promise.resolve(bagView(server)),
     );
     const user = userEvent.setup();
     await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    await loaded(2);
     await user.press(screen.getByText('set4'));
     await user.press(screen.getByText('set3'));
     await waitFor(() => expect(screen.getByText('count:3')).toBeOnTheScreen());
     const before = gets();
-    await act(async () => first.resolve({ signedIn: true, lines: [detail(4)], wishlist: [], adjusted: [] }));
+    await act(async () => first.resolve({ ...bagView([detail(4)]), adjusted: [] }));
     await flush();
     expect(gets()).toBe(before);
     server = [detail(3)];
-    await act(async () => second.resolve({ signedIn: true, lines: server, wishlist: [], adjusted: [] }));
+    await act(async () => second.resolve({ ...bagView(server), adjusted: [] }));
     await flush();
     await flush();
     expect(gets()).toBe(before + 1);
@@ -410,21 +440,21 @@ describe('signed-in bag', () => {
     const first = deferred<unknown>();
     const second = deferred<unknown>();
     const patches = [first.promise, second.promise];
-    let reads = 0;
-    mockApi.mockImplementation((_path: string, options?: { method?: string }) => {
+    let hold = false;
+    mockApi.mockImplementation((_path: string, options?: Options) => {
       if (options?.method === 'PATCH') return patches.shift()!;
-      reads += 1;
-      // The first read loads the bag; the refetch after the changes never answers, so only PATCH replies show.
-      return reads === 1 ? Promise.resolve({ signedIn: true, lines: [detail(2)], wishlist: [] }) : new Promise(() => {});
+      // Once the bag has loaded, reads never answer, so only PATCH replies show.
+      return hold ? new Promise(() => {}) : Promise.resolve(bagView([detail(2)]));
     });
     const user = userEvent.setup();
     const { client } = await renderBag();
-    await waitFor(() => expect(screen.getByText('count:2')).toBeOnTheScreen());
+    await loaded(2);
+    hold = true;
     await user.press(screen.getByText('set4'));
     await user.press(screen.getByText('set3'));
     await waitFor(() => expect(screen.getByText('count:3')).toBeOnTheScreen());
-    await act(async () => second.resolve({ signedIn: true, lines: [detail(3)], wishlist: [], adjusted: [] }));
-    await act(async () => first.resolve({ signedIn: true, lines: [detail(4)], wishlist: [], adjusted: [] }));
+    await act(async () => second.resolve({ ...bagView([detail(3)]), adjusted: [] }));
+    await act(async () => first.resolve({ ...bagView([detail(4)]), adjusted: [] }));
     await flush();
     expect(cachedCount(client)).toBe(3);
     expect(screen.getByText('count:3')).toBeOnTheScreen();
