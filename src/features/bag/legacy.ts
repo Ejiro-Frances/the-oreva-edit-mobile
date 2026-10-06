@@ -4,11 +4,15 @@ import type { CartLine } from '@/lib/types';
 
 const KEY = 'oreva-bag-v1';
 
-/** A guest bag an older version kept on the phone; it is uploaded once, then removed. */
+/**
+ * A guest bag an older version kept on the phone; it is uploaded once, then removed.
+ * A value that cannot be read as a bag is removed now, so it is not retried on every launch.
+ */
 export async function loadLegacyBag(): Promise<CartLine[]> {
   try {
     return cartSchema.parse(JSON.parse((await AsyncStorage.getItem(KEY)) ?? '[]'));
   } catch {
+    await AsyncStorage.removeItem(KEY).catch(() => undefined);
     return [];
   }
 }
