@@ -8,6 +8,7 @@ jest.mock('@/lib/supabase', () => ({
   },
 }));
 jest.mock('@/lib/config', () => ({ apiUrl: 'https://store.test' }));
+jest.mock('@/lib/guest-token', () => ({ getGuestToken: async () => 'cd'.repeat(32) }));
 
 import { AuthApiError, AuthRetryableFetchError } from '@supabase/supabase-js';
 import { api, ApiError } from '@/lib/api';
@@ -109,6 +110,12 @@ describe('api', () => {
     mockAuth.refreshSession.mockResolvedValue({ error: new AuthRetryableFetchError('Bad Gateway', 502) });
     await expect(api('/api/shopping', { auth: true })).rejects.toMatchObject({ status: 0, code: 'network' });
     expect(mockAuth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('sends the guest token header when asked', async () => {
+    fetchMock.mockReturnValue(json(200, { signedIn: false, lines: [], wishlist: [] }));
+    await api('/api/shopping', { guest: true });
+    expect(fetchMock.mock.calls[0][1].headers['X-Guest-Token']).toBe('cd'.repeat(32));
   });
 
   it('refuses an authenticated call with no session', async () => {

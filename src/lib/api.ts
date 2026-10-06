@@ -1,5 +1,6 @@
 import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { apiUrl } from './config';
+import { getGuestToken } from './guest-token';
 import { supabase } from './supabase';
 
 export class ApiError extends Error {
@@ -12,14 +13,14 @@ export class ApiError extends Error {
   }
 }
 
-type Options = { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; auth?: boolean };
+type Options = { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; auth?: boolean; guest?: boolean };
 
 const TIMEOUT_MS = 8000;
 const offline = () =>
   new ApiError("Can't reach the store. Check your connection and try again.", 0, 'network');
 const expired = () => new ApiError('Please sign in again.', 401, 'session_expired');
 
-async function send(path: string, { method = 'GET', body, auth = false }: Options) {
+async function send(path: string, { method = 'GET', body, auth = false, guest = false }: Options) {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (auth) {
@@ -27,6 +28,7 @@ async function send(path: string, { method = 'GET', body, auth = false }: Option
     if (!data.session) throw expired();
     headers.Authorization = `Bearer ${data.session.access_token}`;
   }
+  if (guest) headers['X-Guest-Token'] = await getGuestToken();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
