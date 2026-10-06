@@ -2,6 +2,8 @@
 
 Mobile shopping app built with Expo SDK 57. Customers sign in with their store account, browse the catalogue, pick product variants, and keep a shopping bag that syncs live with the website at https://the-oreva-edit.vercel.app.
 
+Bags and wishlists live on the server for guests and customers; the app keeps only a random guest token in the keychain.
+
 ## Setup
 
 Install dependencies:
