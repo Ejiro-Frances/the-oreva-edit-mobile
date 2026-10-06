@@ -6,6 +6,7 @@ import { router } from 'expo-router';
 import { AppText } from '@/components/AppText';
 import { Button } from '@/components/Button';
 import { Field } from '@/components/Field';
+import { PasswordField } from '@/components/PasswordField';
 import { colors } from '@/components/theme';
 import { useAuth } from '@/features/auth/provider';
 import { ApiError } from '@/lib/api';
@@ -111,11 +112,10 @@ export function SignUpForm() {
           control={control}
           name="password"
           render={({ field, fieldState }) => (
-            <Field
+            <PasswordField
               label="Password"
               required
               autoComplete="new-password"
-              secureTextEntry
               value={field.value}
               onChangeText={field.onChange}
               onBlur={field.onBlur}
