@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ActivityIndicator, FlatList, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppText } from '@/components/AppText';
+import { Button } from '@/components/Button';
 import { ErrorState } from '@/components/ErrorState';
 import { colors } from '@/components/theme';
 import { AudienceFilter } from '@/features/catalogue/AudienceFilter';
@@ -42,6 +43,11 @@ export default function ShopScreen() {
               <ActivityIndicator color={colors.foreground} />
             ) : error ? (
               <ErrorState message={error.message} onRetry={() => refetch()} />
+            ) : filters.audience || filters.category ? (
+              <View style={{ gap: 12, alignItems: 'flex-start' }}>
+                <AppText variant="muted">No pieces match these filters.</AppText>
+                <Button title="Clear filters" variant="secondary" onPress={() => setFilters({})} />
+              </View>
             ) : (
               <AppText variant="muted">Nothing here yet</AppText>
             )}
