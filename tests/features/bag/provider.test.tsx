@@ -18,6 +18,7 @@ import { ApiError } from '@/lib/api';
 import { BagProvider, useBag } from '@/features/bag/provider';
 
 const A = '00000000-0000-4000-8000-000000000001';
+const B = '00000000-0000-4000-8000-000000000002';
 const LEGACY = 'oreva-bag-v1';
 const detail = (quantity: number, variantId = A) => ({
   variantId,
@@ -170,10 +171,11 @@ describe('signed-in bag', () => {
     mockAuthState = { user: { id: 'user-1' }, ready: true };
   });
 
-  it('moves the guest bag into the account once per sign-in, then reads the account bag', async () => {
+  it('moves the guest bag into the account once per sign-in and shows the merged bag it answers with', async () => {
     const merge = deferred<unknown>();
+    // The account bag read at sign-in predates the merge, which adds a line.
     mockApi.mockImplementation((_path: string, options?: Options) =>
-      options?.method === 'POST' ? merge.promise : Promise.resolve(bagView([detail(2)])),
+      options?.method === 'POST' ? merge.promise : Promise.resolve(bagView([detail(1)])),
     );
     await renderBag();
     await waitFor(() => expect(posts()).toHaveLength(1));
@@ -183,12 +185,52 @@ describe('signed-in bag', () => {
     ]);
     await flush();
     expect(screen.getByText('ready:false')).toBeOnTheScreen();
-    const before = gets();
-    await act(async () => merge.resolve(bagView([detail(2)])));
+    expect(gets()).toBe(1);
+    await act(async () => merge.resolve(bagView([detail(1), detail(1, B)])));
     await loaded(2);
-    expect(gets()).toBeGreaterThan(before);
+    await flush();
+    // The merge reply is the bag: no second read.
+    expect(gets()).toBe(1);
+    expect(screen.getByText('count:2')).toBeOnTheScreen();
     expect(mockApi).toHaveBeenCalledWith('/api/shopping', { auth: true, guest: true });
     expect(posts()).toHaveLength(1);
+  });
+
+  it('does not let a bag read that started before the merge hide it', async () => {
+    const read = deferred<unknown>();
+    mockApi.mockImplementation((_path: string, options?: Options) =>
+      options?.method === 'POST' ? Promise.resolve(bagView([detail(3)])) : read.promise,
+    );
+    await renderBag();
+    await loaded(3);
+    await act(async () => read.resolve(bagView([])));
+    await flush();
+    expect(screen.getByText('count:3')).toBeOnTheScreen();
+    expect(gets()).toBe(1);
+  });
+
+  it('shows the merged account bag even when a guest change is still out at sign-in', async () => {
+    mockAuthState = { user: null, ready: true };
+    const patch = deferred<unknown>();
+    mockApi.mockImplementation((_path: string, options?: Options) => {
+      if (options?.method === 'PATCH') return patch.promise;
+      if (options?.method === 'POST') return Promise.resolve(bagView([detail(3)]));
+      // The guest bag loads; account reads never answer, so only the merge reply can show.
+      return options?.auth ? new Promise(() => {}) : Promise.resolve(bagView([detail(1)], false));
+    });
+    const user = userEvent.setup();
+    const { client, view } = await renderBag();
+    await loaded(1);
+    await user.press(screen.getByText('set4'));
+    await waitFor(() => expect(screen.getByText('count:4')).toBeOnTheScreen());
+    mockAuthState = { user: { id: 'user-1' }, ready: true };
+    await view.rerender(tree(client));
+    await loaded(3);
+    // The guest reply lands in the guest bag, not the account's.
+    await act(async () => patch.resolve({ ...bagView([detail(4)], false), adjusted: [] }));
+    await flush();
+    expect(screen.getByText('count:3')).toBeOnTheScreen();
+    expect(cachedCount(client)).toBe(3);
   });
 
   it('includes a bag an older version kept on the phone, then removes it', async () => {
@@ -215,7 +257,7 @@ describe('signed-in bag', () => {
     await view.unmount();
     await render(tree(client));
     await flush();
-    await act(async () => merge.resolve(bagView([])));
+    await act(async () => merge.resolve(bagView([detail(2)])));
     await loaded(2);
     expect(posts()).toHaveLength(1);
   });
@@ -249,7 +291,7 @@ describe('signed-in bag', () => {
     mockApi.mockImplementation((_path: string, options?: Options) => {
       if (options?.method === 'POST') {
         postsSeen += 1;
-        return postsSeen === 1 ? Promise.resolve(bagView([])) : second.promise;
+        return postsSeen === 1 ? Promise.resolve(bagView([detail(1)])) : second.promise;
       }
       return Promise.resolve(bagView([detail(1)]));
     });
@@ -264,7 +306,7 @@ describe('signed-in bag', () => {
     await view.rerender(tree(client));
     await waitFor(() => expect(posts()).toHaveLength(2));
     expect(screen.getByText('ready:false')).toBeOnTheScreen();
-    await act(async () => second.resolve(bagView([])));
+    await act(async () => second.resolve(bagView([detail(1)])));
     await waitFor(() => expect(screen.getByText('ready:true')).toBeOnTheScreen());
     await act(async () => guestRead.resolve(null));
   });
@@ -282,10 +324,10 @@ describe('signed-in bag', () => {
   });
 
   it('shows an error, not an empty bag, when the bag cannot be loaded, and retries', async () => {
-    // Reads fail until the customer retries: the first load and the refresh after the merge.
+    // The store is out of reach until the customer retries: the merge and the first load both fail.
     let failing = true;
     mockApi.mockImplementation(async (_path: string, options?: Options) => {
-      if (!options?.method && failing) throw offline();
+      if (failing) throw offline();
       return bagView([detail(2)]);
     });
     const user = userEvent.setup();

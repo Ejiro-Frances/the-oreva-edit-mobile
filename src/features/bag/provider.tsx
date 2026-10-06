@@ -5,7 +5,7 @@ import { useAuth } from '@/features/auth/provider';
 import type { BagLine, BagView } from '@/lib/types';
 import { applyOptimistic, type BagOp } from './ops';
 import { clearLegacyBag, loadLegacyBag } from './legacy';
-import { bagMutationKey, bagQueryKey, refreshBag } from './keys';
+import { bagMutationKey, bagQueryKey } from './keys';
 import { useBagLive } from './live';
 
 export { bagMutationKey, bagQueryKey, refreshBag } from './keys';
@@ -35,24 +35,24 @@ const asApiError = (error: Error | null) =>
  * Settles where the bag lives, once per identity (a remount shares the request in flight):
  * signed in, the guest bag and any old on-phone bag move into the account; as a guest, an old
  * on-phone bag is uploaded. The old key is removed only after the server accepted it.
- * Resolves true when something was sent, so the bag is worth reading again.
+ * Resolves with the bag the server answered with, or null when nothing was sent.
  */
-const settles = new Map<string, Promise<boolean>>();
+const settles = new Map<string, Promise<BagView | null>>();
 function settleBag(userId: string | null) {
   const key = userId ?? 'guest';
   let pending = settles.get(key);
   if (!pending) {
     pending = (async () => {
       const lines = await loadLegacyBag();
-      if (!userId && !lines.length) return false;
-      await api('/api/shopping', {
+      if (!userId && !lines.length) return null;
+      const view = await api<BagView>('/api/shopping', {
         method: 'POST',
         auth: !!userId,
         guest: true,
         body: { action: 'merge', lines, wishlist: [] },
       });
       await clearLegacyBag();
-      return true;
+      return view;
     })().finally(() => settles.delete(key));
     settles.set(key, pending);
   }
@@ -69,13 +69,23 @@ export function BagProvider({ children }: { children: ReactNode }) {
   // The identity whose settle step has finished; until then its bag is not ready.
   const [settledFor, setSettledFor] = useState<string | null>(null);
   const latest = useRef(0);
-  const inFlight = useRef(0);
+  // Changes on their way, per identity: a guest change still out at sign-in says nothing about
+  // the account bag.
+  const inFlight = useRef(new Map<string, number>());
+  const changing = (id: string) => inFlight.current.get(id) ?? 0;
 
   useEffect(() => {
     if (!authReady) return;
     let active = true;
     settleBag(userId)
-      .then((sent) => (sent ? refreshBag(queryClient, userId) : undefined))
+      .then(async (view) => {
+        // The merge answers with the bag it produced, so it is shown as is, with no second read.
+        // A read that started before the merge landed would lack it, so it is cancelled first; a
+        // change on its way wins, and the refetch after it settles brings the server's answer.
+        if (!view || !active || changing(identity) > 0) return;
+        await queryClient.cancelQueries({ queryKey: bagQueryKey(userId) });
+        if (active && changing(identity) === 0) queryClient.setQueryData(bagQueryKey(userId), view);
+      })
       .catch((error) => {
         if (active) setNotice(message(error));
       })
@@ -98,7 +108,7 @@ export function BagProvider({ children }: { children: ReactNode }) {
       const view = await api<BagView>('/api/shopping', { auth: !!userId, guest: true });
       // A reply that lands while a change is on its way may predate it: keep what is shown,
       // and let the refetch after the last change settles bring the server's answer.
-      if (inFlight.current > 0) return queryClient.getQueryData<BagView>(bagQueryKey(userId)) ?? view;
+      if (changing(identity) > 0) return queryClient.getQueryData<BagView>(bagQueryKey(userId)) ?? view;
       return view;
     },
   });
@@ -108,27 +118,32 @@ export function BagProvider({ children }: { children: ReactNode }) {
     mutationFn: (op: BagOp) =>
       api<BagView>('/api/shopping', { method: 'PATCH', auth: !!userId, guest: true, body: { ops: [op] } }),
     onMutate: async (op) => {
-      inFlight.current += 1;
+      // The change belongs to the identity it was made as: its reply must not land in the bag of
+      // whoever signed in or out meanwhile (React Query hands a pending change the newest callbacks).
+      const key = bagQueryKey(userId);
+      inFlight.current.set(identity, changing(identity) + 1);
       const request = ++latest.current;
-      await queryClient.cancelQueries({ queryKey: bagQueryKey(userId) });
-      const previous = queryClient.getQueryData<BagView>(bagQueryKey(userId));
-      if (previous) queryClient.setQueryData(bagQueryKey(userId), applyOptimistic(previous, op));
-      return { previous, request };
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<BagView>(key);
+      if (previous) queryClient.setQueryData(key, applyOptimistic(previous, op));
+      return { previous, request, key, identity };
     },
     onSuccess: (view, _op, context) => {
       // An older reply must not overwrite a newer change.
-      if (context?.request === latest.current) queryClient.setQueryData(bagQueryKey(userId), view);
+      if (context?.request === latest.current) queryClient.setQueryData(context.key, view);
       if (view.adjusted?.length) setNotice(CAPPED);
     },
     onError: (error, _op, context) => {
       if (context?.request === latest.current && context.previous)
-        queryClient.setQueryData(bagQueryKey(userId), context.previous);
+        queryClient.setQueryData(context.key, context.previous);
       setNotice(message(error));
     },
-    onSettled: () => {
+    onSettled: (_view, _error, _op, context) => {
+      if (!context) return;
       // isMutating() still counts the settling change inside onSettled, so the provider keeps its own count.
-      inFlight.current = Math.max(0, inFlight.current - 1);
-      if (inFlight.current === 0) void queryClient.invalidateQueries({ queryKey: bagQueryKey(userId) });
+      const left = Math.max(0, changing(context.identity) - 1);
+      inFlight.current.set(context.identity, left);
+      if (left === 0) void queryClient.invalidateQueries({ queryKey: context.key });
     },
   });
 
