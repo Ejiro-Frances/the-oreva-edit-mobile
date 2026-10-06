@@ -19,7 +19,7 @@ type BagContext = {
   clearNotice: () => void;
   error: ApiError | null;
   retry: () => void;
-  add: (variantId: string, quantity: number, stock: number) => Promise<boolean>;
+  add: (variantId: string, quantity: number) => Promise<boolean>;
   setQuantity: (variantId: string, quantity: number) => void;
   remove: (variantId: string) => void;
 };

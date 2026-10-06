@@ -59,7 +59,7 @@ function ProductDetail({ product }: { product: Product }) {
     clearNotice();
     try {
       // Failures and stock caps stay in the notice below; only a real addition is confirmed.
-      if (await add(variant.id, 1, variant.stock))
+      if (await add(variant.id, 1))
         toast.show({
           message: 'Added to your bag',
           action: { label: 'View bag', onPress: () => router.navigate('/bag') },

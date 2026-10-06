@@ -55,7 +55,7 @@ function Probe() {
       <Text>{`ready:${bag.ready}`}</Text>
       <Text>{`error:${bag.error?.message ?? ''}`}</Text>
       <Text>{`result:${result}`}</Text>
-      <Pressable onPress={async () => setResult(String(await bag.add(A, 1, 5)))}><Text>add</Text></Pressable>
+      <Pressable onPress={async () => setResult(String(await bag.add(A, 1)))}><Text>add</Text></Pressable>
       <Pressable onPress={() => bag.setQuantity(A, 4)}><Text>set4</Text></Pressable>
       <Pressable onPress={() => bag.setQuantity(A, 3)}><Text>set3</Text></Pressable>
       <Pressable onPress={bag.retry}><Text>retry</Text></Pressable>
