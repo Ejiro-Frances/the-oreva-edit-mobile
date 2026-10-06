@@ -1,0 +1,129 @@
+import { act, render, screen, userEvent, waitFor } from '@testing-library/react-native';
+import { Text, Pressable } from 'react-native';
+
+const mockAuth = {
+  getSession: jest.fn(),
+  onAuthStateChange: jest.fn(),
+  setSession: jest.fn(),
+  signOut: jest.fn(),
+};
+jest.mock('@/lib/supabase', () => ({
+  supabase: {
+    get auth() {
+      return mockAuth;
+    },
+  },
+}));
+const mockApi = jest.fn();
+jest.mock('@/lib/api', () => {
+  const actual = jest.requireActual('@/lib/api');
+  return { ...actual, api: (...args: unknown[]) => mockApi(...args) };
+});
+
+// The real query client registers an expo-network listener at import; the provider only needs removeQueries.
+const mockRemoveQueries = jest.fn();
+jest.mock('@/lib/query', () => ({
+  queryClient: { removeQueries: (...args: unknown[]) => mockRemoveQueries(...args) },
+}));
+
+import { AuthProvider, useAuth } from '@/features/auth/provider';
+
+let emit: (event: string, session: unknown) => void = () => {};
+const tokens = { access_token: 'a.b.c', refresh_token: 'r', expires_at: 1 };
+
+function Probe({ onResult }: { onResult?: (r: unknown) => void }) {
+  const { user, ready, signIn, signUp, signOut } = useAuth();
+  return (
+    <>
+      <Text>{ready ? `user:${user?.id ?? 'none'}` : 'loading'}</Text>
+      <Pressable onPress={() => signOut()}>
+        <Text>sign out</Text>
+      </Pressable>
+      <Pressable onPress={() => signIn({ email: 'a@b.co', password: 'pw' })}>
+        <Text>sign in</Text>
+      </Pressable>
+      <Pressable
+        onPress={async () =>
+          onResult?.(await signUp({ firstName: 'A', lastName: 'B', email: 'a@b.co', password: 'longenough', phone: '' }))
+        }
+      >
+        <Text>sign up</Text>
+      </Pressable>
+    </>
+  );
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+  mockAuth.onAuthStateChange.mockImplementation((cb) => {
+    emit = cb;
+    return { data: { subscription: { unsubscribe: jest.fn() } } };
+  });
+  mockAuth.setSession.mockImplementation(async () => {
+    emit('SIGNED_IN', { user: { id: 'user-1' } });
+    return { data: {}, error: null };
+  });
+});
+
+describe('AuthProvider', () => {
+  it('starts as a guest once the stored session is read', async () => {
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    expect(await screen.findByText('user:none')).toBeOnTheScreen();
+  });
+
+  it('starts as a guest when the stored session cannot be read', async () => {
+    mockAuth.getSession.mockRejectedValue(new Error('keychain unavailable'));
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    expect(await screen.findByText('user:none')).toBeOnTheScreen();
+  });
+
+  it('signs out on this device only, keeping the website session, and drops the bag', async () => {
+    // Like supabase-js, a local sign-out ends the session with a SIGNED_OUT event.
+    mockAuth.signOut.mockImplementation(async () => {
+      emit('SIGNED_OUT', null);
+      return { error: null };
+    });
+    const user = userEvent.setup();
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    await user.press(await screen.findByText('sign out'));
+    await waitFor(() => expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' }));
+    await waitFor(() => expect(mockRemoveQueries).toHaveBeenCalledWith({ queryKey: ['bag'] }));
+  });
+
+  it('drops the bag whenever the session ends, not only through signOut', async () => {
+    mockAuth.getSession.mockResolvedValue({ data: { session: { user: { id: 'user-1' } } } });
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    expect(await screen.findByText('user:user-1')).toBeOnTheScreen();
+    await act(async () => emit('TOKEN_REFRESHED', { user: { id: 'user-1' } }));
+    expect(mockRemoveQueries).not.toHaveBeenCalled();
+    // e.g. the refresh token was revoked on the server
+    await act(async () => emit('SIGNED_OUT', null));
+    expect(screen.getByText('user:none')).toBeOnTheScreen();
+    expect(mockRemoveQueries).toHaveBeenCalledWith({ queryKey: ['bag'] });
+    expect(mockAuth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('signs in through the store API in mobile mode and adopts the session', async () => {
+    mockApi.mockResolvedValue({ ok: true, session: tokens });
+    const user = userEvent.setup();
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    await user.press(await screen.findByText('sign in'));
+    expect(mockApi).toHaveBeenCalledWith('/api/auth/sign-in', {
+      method: 'POST',
+      body: { email: 'a@b.co', password: 'pw', client: 'mobile' },
+    });
+    expect(mockAuth.setSession).toHaveBeenCalledWith({ access_token: 'a.b.c', refresh_token: 'r' });
+    await waitFor(() => expect(screen.getByText('user:user-1')).toBeOnTheScreen());
+  });
+
+  it('reports when sign-up needs email confirmation instead of signing in', async () => {
+    mockApi.mockResolvedValue({ ok: true, confirm: true });
+    const onResult = jest.fn();
+    const user = userEvent.setup();
+    await render(<AuthProvider><Probe onResult={onResult} /></AuthProvider>);
+    await user.press(await screen.findByText('sign up'));
+    await waitFor(() => expect(onResult).toHaveBeenCalledWith('confirm'));
+    expect(mockAuth.setSession).not.toHaveBeenCalled();
+  });
+});
