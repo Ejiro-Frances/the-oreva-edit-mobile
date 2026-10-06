@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, ScrollView, View } from 'react-native';
 import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -8,6 +8,7 @@ import { Button } from '@/components/Button';
 import { ErrorState } from '@/components/ErrorState';
 import { Notice } from '@/components/Notice';
 import { Price } from '@/components/Price';
+import { useToast } from '@/components/Toast';
 import { colors } from '@/components/theme';
 import { useBag } from '@/features/bag/provider';
 import { useProduct } from '@/features/catalogue/queries';
@@ -49,16 +50,20 @@ function ProductDetail({ product }: { product: Product }) {
   const [selection, setSelection] = useState(() => initialSelection(product));
   const variant = selectedVariant(product, selection.options);
   const { add, notice, clearNotice } = useBag();
+  const toast = useToast();
   const [adding, setAdding] = useState(false);
-  const [added, setAdded] = useState(false);
 
   const addToBag = async () => {
     if (!variant) return;
     setAdding(true);
-    setAdded(false);
     clearNotice();
     try {
-      setAdded(await add(variant.id, 1, variant.stock));
+      // Failures and stock caps stay in the notice below; only a real addition is confirmed.
+      if (await add(variant.id, 1, variant.stock))
+        toast.show({
+          message: 'Added to your bag',
+          action: { label: 'View bag', onPress: () => router.navigate('/bag') },
+        });
     } finally {
       setAdding(false);
     }
@@ -88,10 +93,7 @@ function ProductDetail({ product }: { product: Product }) {
         <VariantPicker
           product={product}
           selected={selection.options}
-          onChoose={(k, val) => {
-            setAdded(false);
-            setSelection((s) => selectOption(product, s, k, val));
-          }}
+          onChoose={(k, val) => setSelection((s) => selectOption(product, s, k, val))}
         />
         <AppText variant="muted">
           {!variant
@@ -106,20 +108,6 @@ function ProductDetail({ product }: { product: Product }) {
           disabled={!variant || variant.stock < 1}
           onPress={() => void addToBag()}
         />
-        {added ? (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <AppText>Added to your bag</AppText>
-            <Pressable
-              accessibilityRole="link"
-              onPress={() => router.navigate('/bag')}
-              style={{ minHeight: 44, justifyContent: 'center' }}
-            >
-              <AppText variant="label" style={{ color: colors.primary, textDecorationLine: 'underline' }}>
-                View bag
-              </AppText>
-            </Pressable>
-          </View>
-        ) : null}
         {notice ? <Notice message={notice} onClose={clearNotice} /> : null}
         {product.description ? <AppText>{product.description}</AppText> : null}
         {product.details.map((line) => (

@@ -13,6 +13,7 @@ import { colors } from '@/components/theme';
 import { AuthProvider } from '@/features/auth/provider';
 import { BagProvider } from '@/features/bag/provider';
 import { NetworkBanner } from '@/components/NetworkBanner';
+import { ToastProvider } from '@/components/Toast';
 import { queryClient } from '@/lib/query';
 
 SplashScreen.preventAutoHideAsync();
@@ -36,6 +37,7 @@ export default function RootLayout() {
         <NetworkBanner />
         <AuthProvider>
           <BagProvider>
+            <ToastProvider>
             <Stack
               screenOptions={{
                 contentStyle: { backgroundColor: colors.background },
@@ -50,6 +52,7 @@ export default function RootLayout() {
               <Stack.Screen name="sign-up" options={{ presentation: 'modal', title: '' }} />
               <Stack.Screen name="forgot-password" options={{ presentation: 'modal', title: '' }} />
             </Stack>
+            </ToastProvider>
           </BagProvider>
         </AuthProvider>
       </QueryClientProvider>
