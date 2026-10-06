@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@testing-library/react-native';
+import { act, render, screen, userEvent, waitFor } from '@testing-library/react-native';
 import { Text, Pressable } from 'react-native';
 
 const mockAuth = {
@@ -79,12 +79,29 @@ describe('AuthProvider', () => {
   });
 
   it('signs out on this device only, keeping the website session, and drops the bag', async () => {
-    mockAuth.signOut.mockResolvedValue({ error: null });
+    // Like supabase-js, a local sign-out ends the session with a SIGNED_OUT event.
+    mockAuth.signOut.mockImplementation(async () => {
+      emit('SIGNED_OUT', null);
+      return { error: null };
+    });
     const user = userEvent.setup();
     await render(<AuthProvider><Probe /></AuthProvider>);
     await user.press(await screen.findByText('sign out'));
     await waitFor(() => expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' }));
     await waitFor(() => expect(mockRemoveQueries).toHaveBeenCalledWith({ queryKey: ['bag'] }));
+  });
+
+  it('drops the bag whenever the session ends, not only through signOut', async () => {
+    mockAuth.getSession.mockResolvedValue({ data: { session: { user: { id: 'user-1' } } } });
+    await render(<AuthProvider><Probe /></AuthProvider>);
+    expect(await screen.findByText('user:user-1')).toBeOnTheScreen();
+    await act(async () => emit('TOKEN_REFRESHED', { user: { id: 'user-1' } }));
+    expect(mockRemoveQueries).not.toHaveBeenCalled();
+    // e.g. the refresh token was revoked on the server
+    await act(async () => emit('SIGNED_OUT', null));
+    expect(screen.getByText('user:none')).toBeOnTheScreen();
+    expect(mockRemoveQueries).toHaveBeenCalledWith({ queryKey: ['bag'] });
+    expect(mockAuth.signOut).not.toHaveBeenCalled();
   });
 
   it('signs in through the store API in mobile mode and adopts the session', async () => {

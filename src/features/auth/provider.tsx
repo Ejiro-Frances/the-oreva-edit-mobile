@@ -42,8 +42,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(stored);
         setReady(true);
       });
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null);
+      // However the session ended (signed out here, or a refresh the server refused), the account
+      // bag must not stay on screen for whoever uses the phone next.
+      if (event === 'SIGNED_OUT') queryClient.removeQueries({ queryKey: ['bag'] });
     });
     return () => {
       active = false;
@@ -72,8 +75,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     async signOut() {
       // Local scope: signing out of the app must not end the customer's website session.
+      // supabase-js then emits SIGNED_OUT, which drops the bag.
       await supabase.auth.signOut({ scope: 'local' });
-      queryClient.removeQueries({ queryKey: ['bag'] });
     },
     async forgotPassword(email) {
       await api('/api/auth/forgot-password', { method: 'POST', body: { email, client: 'mobile' } });
