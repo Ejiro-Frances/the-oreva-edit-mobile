@@ -20,13 +20,23 @@ import ShopScreen from '@/app/(tabs)/index';
 
 const none = { products: [], page: 1, pageSize: 12, total: 0 };
 
+// FlatList renders the 12 products in batches: the batch after the first 10 is scheduled 50 ms
+// out, which on real timers fires during userEvent's press delay, outside act(). Fake timers
+// let userEvent advance time itself, inside act().
+const setup = () => userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+
 beforeEach(() => {
+  jest.useFakeTimers();
   mockApi.mockImplementation(async (path: string) => {
     if (path === '/api/catalogue/categories') return categories;
     if (path.includes('audience=men') && path.includes('category=dresses')) return none;
     if (path.includes('category=dresses')) return dresses;
     return all;
   });
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 const renderShop = async () => {
@@ -42,7 +52,7 @@ const selected = (name: string) => chip(name).props.accessibilityState?.selected
 
 describe('Shop tab', () => {
   it('shows the pieces in a category after choosing it', async () => {
-    const user = userEvent.setup();
+    const user = setup();
     await renderShop();
     expect(await screen.findByText('The Sade midi dress')).toBeOnTheScreen();
     await user.press(await screen.findByRole('button', { name: 'Dresses' }));
@@ -51,7 +61,7 @@ describe('Shop tab', () => {
   });
 
   it('always shows which audience and category are applied', async () => {
-    const user = userEvent.setup();
+    const user = setup();
     await renderShop();
     await user.press(await screen.findByRole('button', { name: 'Men' }));
     await user.press(await screen.findByRole('button', { name: 'Dresses' }));
@@ -62,7 +72,7 @@ describe('Shop tab', () => {
   });
 
   it('explains an empty combination and clears the filters', async () => {
-    const user = userEvent.setup();
+    const user = setup();
     await renderShop();
     await user.press(await screen.findByRole('button', { name: 'Men' }));
     await user.press(await screen.findByRole('button', { name: 'Dresses' }));
